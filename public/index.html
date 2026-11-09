@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#f4f1e9">
+    <title>Frame / Spectra 6</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="wordmark" href="/" aria-label="Frame home"><span class="mark">F</span> FRAME <span class="wordmark-note">SPECTRA 6</span></a>
+      <div class="connection"><span class="pulse"></span><span id="connection-label">Connecting</span><span class="separator">/</span><span>LOCAL DISPLAY</span></div>
+    </header>
+    <main>
+      <section class="intro">
+        <div><p class="eyebrow">YOUR DAILY CANVAS <span>·</span> COPENHAGEN</p><h1>Set the scene.</h1></div>
+        <p class="intro-copy">Choose what appears on your display. <br>One portrait, refreshed every midnight.</p>
+      </section>
+      <section class="workspace" aria-label="Display configuration">
+        <div class="gallery-panel">
+          <div class="gallery-heading"><div><p class="eyebrow">01 / IMAGE SOURCE</p><h2>Find your frame</h2></div><span id="source-count" class="count-label"></span></div>
+          <div class="tabs" role="tablist" aria-label="Image source category">
+            <button class="tab active" role="tab" aria-selected="true" data-category="uploads">Your images</button>
+            <button class="tab" role="tab" aria-selected="false" data-category="movies">Film</button>
+            <button class="tab" role="tab" aria-selected="false" data-category="nature">Nature</button>
+            <button class="tab" role="tab" aria-selected="false" data-category="museum">Museum</button>
+            <button class="tab" role="tab" aria-selected="false" data-category="ai">AI create</button>
+            <button class="tab weather-tab" role="tab" aria-selected="false" data-category="weather">Weather</button>
+          </div>
+          <div id="movie-filters" class="movie-filters" role="group" aria-label="Movie poster feed" hidden>
+            <button class="movie-filter active" type="button" aria-pressed="true" data-sort="trending">Trending now</button>
+            <button class="movie-filter" type="button" aria-pressed="false" data-sort="latest">Now playing</button>
+          </div>
+          <div class="gallery-tools">
+            <label class="search-box" id="search-wrap"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.5"></circle><path d="m16 16 4.3 4.3"></path></svg><input id="search" type="search" placeholder="Search the collection" autocomplete="off"><kbd>↵</kbd></label>
+            <label class="upload-button" for="file-input"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M5 14v5h14v-5"></path></svg><span>Add image</span><input id="file-input" type="file" accept="image/*" capture="environment" hidden></label>
+          </div>
+          <section id="ai-panel" class="ai-panel" hidden>
+            <p class="eyebrow">CREATE AN ORIGINAL IMAGE</p>
+            <label class="setting-field" for="ai-provider">Image provider
+              <select id="ai-provider">
+                <option value="openai">OpenAI</option>
+                <option value="google">Google Gemini</option>
+              </select>
+            </label>
+            <label class="setting-field" for="ai-orientation">Composition orientation
+              <select id="ai-orientation">
+                <option value="landscape">Landscape · 4:3</option>
+                <option value="portrait">Portrait · 3:4</option>
+              </select>
+            </label>
+            <label class="setting-field" for="ai-prompt">Describe the image
+              <textarea id="ai-prompt" maxlength="2000" rows="4" placeholder="A quiet Danish coastline at dusk, painterly, portrait composition"></textarea>
+            </label>
+            <button id="ai-generate" class="primary-button ai-generate">Generate image</button>
+            <p id="ai-note" class="settings-note">AI generation requires an API key in the server’s .env file.</p>
+          </section>
+          <div id="gallery" class="gallery" aria-live="polite"></div>
+          <div class="gallery-footer"><span id="gallery-note">Upload from this device or your phone.</span><button id="load-more" class="text-button" hidden>Load more</button></div>
+        </div>
+        <aside class="preview-panel">
+          <div class="preview-heading"><p class="eyebrow">02 / ON YOUR DISPLAY</p><span class="live-tag"><span></span> READY</span></div>
+          <div class="device-stage"><div class="device-frame"><div class="device-screen"><img id="current-image" src="/display.png" alt="Current image prepared for the display"><div id="empty-state" class="empty-state" hidden><span>F</span><p>Your next frame<br>starts here.</p></div><div class="screen-label" id="screen-label">DISPLAY PREVIEW</div></div></div><span class="stage-caption">SPECTRA 6 <span>·</span> 1200 × 1600</span></div>
+          <div class="selection-info"><span class="selection-dot"></span><div><span class="micro-label">SELECTED SOURCE</span><strong id="selected-title">Copenhagen weather</strong></div></div>
+          <div class="preview-actions"><button id="generate" class="primary-button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 0 0-14.8-3L3 11m0-6v6h6m-5 2a8 8 0 0 0 14.8 3L21 13m0 6v-6h-6"></path></svg><span>Prepare image now</span></button><a id="display-link" class="icon-link" href="/display.png" target="_blank" rel="noreferrer" title="Open fixed image URL" aria-label="Open fixed image URL"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h6v6m0-6-9 9"></path><path d="M18 13v6a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h6"></path></svg></a></div>
+          <button id="push-to-frame" class="frame-button">Send to PhotoFrame</button>
+          <details class="render-settings">
+            <summary>Image processing &amp; overlays</summary>
+            <label class="setting-field" for="dither-algorithm">Dithering
+              <select id="dither-algorithm">
+                <option value="floyd-steinberg">Floyd–Steinberg</option>
+                <option value="stucki">Stucki</option>
+                <option value="burkes">Burkes</option>
+                <option value="sierra">Sierra</option>
+              </select>
+            </label>
+            <label class="check-setting"><input id="smart-enhance" type="checkbox"> Smart color and contrast</label>
+            <label class="check-setting"><input id="smart-crop" type="checkbox"> Focus-aware crop</label>
+            <label class="setting-field" for="overlay-mode">Smart overlay
+              <select id="overlay-mode">
+                <option value="weather">Weather (weather source only)</option>
+                <option value="smart">Smart title and date</option>
+                <option value="date">Date</option>
+                <option value="none">Off</option>
+              </select>
+            </label>
+            <button id="save-settings" class="frame-button">Save processing settings</button>
+            <p id="settings-note" class="settings-note">Settings apply next time you prepare or send an image.</p>
+          </details>
+          <p class="status-note" id="status-note">Next automatic refresh at midnight, Copenhagen time.</p>
+        </aside>
+      </section>
+      <footer class="page-footer"><span>IMAGE ENDPOINT <a href="/display.png" target="_blank" rel="noreferrer">/display.png <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h6v6m0-6-9 9"></path><path d="M18 13v6a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h6"></path></svg></a></span><span id="generated-at">Waiting for first image</span></footer>
+    </main>
+    <div id="toast" class="toast" role="status"></div>
+    <script src="/app.js" defer></script>
+  </body>
+</html>
