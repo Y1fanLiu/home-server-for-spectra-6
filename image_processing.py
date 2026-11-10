@@ -4,7 +4,7 @@ from io import BytesIO
 from typing import Sequence
 
 import numpy as np
-from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageOps, ImageStat
+from PIL import Image, ImageDraw, ImageEnhance, ImageFont, ImageOps, ImageStat
 from numba import njit
 
 DISPLAY_SIZE = (1200, 1600)
@@ -35,48 +35,22 @@ DIFFUSION_KERNELS: dict[str, tuple[int, tuple[tuple[int, int, int], ...]]] = {
 }
 
 
-def smart_center(image: Image.Image, target_size: tuple[int, int]) -> tuple[float, float]:
-    source_ratio = image.width / image.height
-    target_ratio = target_size[0] / target_size[1]
-    if source_ratio == target_ratio:
-        return (0.5, 0.5)
-
-    scale = min(256 / image.width, 256 / image.height, 1)
-    sample_size = (max(1, round(image.width * scale)), max(1, round(image.height * scale)))
-    edges = ImageOps.grayscale(image.resize(sample_size, Image.Resampling.BILINEAR)).filter(ImageFilter.FIND_EDGES)
-    edge_pixels = edges.load()
-
-    if source_ratio > target_ratio:
-        crop_width = max(1, round(edges.height * target_ratio))
-        column_energy = [sum(edge_pixels[x, y] for y in range(edges.height)) for x in range(edges.width)]
-        start = min(range(max(1, edges.width - crop_width + 1)), key=lambda x: -sum(column_energy[x:x + crop_width]))
-        focal = (start + crop_width / 2) / edges.width
-        return (0.65 * focal + 0.35 * 0.5, 0.5)
-
-    crop_height = max(1, round(edges.width / target_ratio))
-    row_energy = [sum(edge_pixels[x, y] for x in range(edges.width)) for y in range(edges.height)]
-    start = min(range(max(1, edges.height - crop_height + 1)), key=lambda y: -sum(row_energy[y:y + crop_height]))
-    focal = (start + crop_height / 2) / edges.height
-    return (0.5, 0.65 * focal + 0.35 * 0.5)
-
-
 def fit_image(
     image_bytes: bytes,
     *,
-    smart_crop: bool = False,
-    smart_enhance: bool = False,
+    exposure: float = 0,
+    contrast: float = 1,
+    saturation: float = 1,
     target_size: tuple[int, int] = DISPLAY_SIZE,
 ) -> Image.Image:
     with Image.open(BytesIO(image_bytes)) as opened:
         image = ImageOps.exif_transpose(opened).convert("RGB")
 
-    if smart_enhance:
-        image = ImageOps.autocontrast(image, cutoff=1)
-        image = ImageEnhance.Color(image).enhance(1.08)
-        image = ImageEnhance.Contrast(image).enhance(1.04)
-
-    centering = smart_center(image, target_size) if smart_crop else (0.5, 0.45)
-    return ImageOps.fit(image, target_size, method=Image.Resampling.LANCZOS, centering=centering)
+    image = ImageOps.fit(image, target_size, method=Image.Resampling.LANCZOS)
+    image = ImageEnhance.Brightness(image).enhance(2**exposure)
+    image = ImageEnhance.Contrast(image).enhance(contrast)
+    image = ImageEnhance.Color(image).enhance(saturation)
+    return image
 
 
 def quantize_display(

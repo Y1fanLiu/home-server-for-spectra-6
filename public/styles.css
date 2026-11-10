@@ -105,6 +105,10 @@ kbd { padding: 2px 5px; border: 1px solid #e6e3db; color: #99978f; font: 10px va
 .render-settings { margin-top: 13px; padding-top: 12px; border-top: 1px solid var(--line); }
 .render-settings summary { color: #77766f; font-size: 10px; cursor: pointer; }
 .render-settings .setting-field { margin: 10px 0; }
+.slider-field { gap: 5px; }
+.slider-heading { display: flex; justify-content: space-between; }
+.slider-heading output { color: var(--ink); font-family: "DM Mono", monospace; }
+.slider-field input { width: 100%; margin: 0; accent-color: var(--coral); }
 .check-setting { display: flex; align-items: center; gap: 8px; margin: 10px 0; color: #77766f; font-size: 10px; }
 .check-setting input { accent-color: var(--coral); }
 .render-settings .frame-button { width: 100%; }

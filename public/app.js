@@ -51,6 +51,7 @@ function renderItems() {
   if (!items.length) {
     const empty = category === 'movies'
       ? '<strong>Movie posters, ready to roll.</strong><br>Add a TMDB API key in .env to browse current and trending releases.'
+      : category === 'tv' ? '<strong>TV posters, ready to roll.</strong><br>Try searching for a show or browse current and trending series.'
       : category === 'museum' ? 'No artworks found. Try a broader search, like “landscape”.'
         : category === 'nature' ? 'No images found. Try another search.' : 'Images uploaded from your phone will appear here.';
     gallery.innerHTML = `<div class="gallery-message"><span class="message-mark">F</span><span>${empty}</span></div>`;
@@ -71,7 +72,9 @@ async function loadItems() {
     } else {
       const result = await request(`/api/sources?category=${encodeURIComponent(category)}&sort=${movieSort}&q=${encodeURIComponent(search.value.trim())}`);
       items = result.items;
-      galleryNote.textContent = category === 'movies' ? 'Trending movie posters · TMDB' : category === 'museum' ? 'Open-access collection · The Met' : 'Community imagery · Wikimedia Commons';
+      galleryNote.textContent = category === 'movies' ? 'Trending movie posters · TMDB'
+        : category === 'tv' ? 'Trending TV show posters · TMDB'
+          : category === 'museum' ? 'Open-access collection · The Met' : 'Community imagery · Wikimedia Commons';
     }
     renderItems();
   } catch (error) {
@@ -93,8 +96,10 @@ async function loadStatus() {
     else if (status.source?.type === 'remote') selected = status.source;
     if (selected) { selectedTitle.textContent = selected.title || 'Selected image'; renderItems(); }
     document.querySelector('#dither-algorithm').value = status.processing?.dither || 'floyd-steinberg';
-    document.querySelector('#smart-enhance').checked = status.processing?.smartEnhance === true;
-    document.querySelector('#smart-crop').checked = status.processing?.smartCrop === true;
+    document.querySelector('#exposure').value = status.processing?.exposure ?? 0;
+    document.querySelector('#contrast').value = (status.processing?.contrast ?? 1) * 100;
+    document.querySelector('#saturation').value = (status.processing?.saturation ?? 1) * 100;
+    updateSliderValues();
     document.querySelector('#overlay-mode').value = status.overlay?.mode || 'weather';
     const providers = status.aiProviders || {};
     enabledAiProviders = providers;
@@ -113,6 +118,41 @@ async function loadStatus() {
   } catch { document.querySelector('#connection-label').textContent = 'OFFLINE'; }
 }
 
+function updateSliderValues() {
+  const exposure = Number(document.querySelector('#exposure').value);
+  document.querySelector('#exposure-value').value = `${exposure > 0 ? '+' : ''}${exposure.toFixed(1)} EV`;
+  document.querySelector('#contrast-value').value = `${document.querySelector('#contrast').value}%`;
+  document.querySelector('#saturation-value').value = `${document.querySelector('#saturation').value}%`;
+}
+
+function currentProcessingSettings() {
+  return {
+    dither: document.querySelector('#dither-algorithm').value,
+    exposure: Number(document.querySelector('#exposure').value),
+    contrast: Number(document.querySelector('#contrast').value) / 100,
+    saturation: Number(document.querySelector('#saturation').value) / 100,
+  };
+}
+
+async function saveSettings() {
+  await request('/api/settings', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      processing: currentProcessingSettings(),
+      overlay: { mode: document.querySelector('#overlay-mode').value },
+    }),
+  });
+}
+
+async function preparePreview() {
+  const result = await request('/api/generate', { method: 'POST' });
+  currentImage.hidden = false;
+  emptyState.hidden = true;
+  currentImage.src = `/display.png?t=${Date.now()}`;
+  document.querySelector('#generated-at').textContent = `Last prepared ${new Date(result.updatedAt).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}`;
+}
+
 async function choose(item) {
   selected = item;
   renderItems();
@@ -128,6 +168,22 @@ async function choose(item) {
   } catch (error) { notify(error.message); return false; }
 }
 
+document.querySelectorAll('.slider-field input').forEach((slider) => {
+  slider.addEventListener('input', updateSliderValues);
+  slider.addEventListener('change', async () => {
+    const note = document.querySelector('#settings-note');
+    note.textContent = 'Saving settings and refreshing preview…';
+    try {
+      await saveSettings();
+      await preparePreview();
+      note.textContent = 'Saved. The preview reflects your slider settings.';
+    } catch (error) {
+      note.textContent = error.message;
+      notify(error.message);
+    }
+  });
+});
+
 document.querySelectorAll('.tab').forEach((tab) => tab.addEventListener('click', () => {
   document.querySelectorAll('.tab').forEach((candidate) => {
     const active = candidate === tab;
@@ -135,6 +191,7 @@ document.querySelectorAll('.tab').forEach((tab) => tab.addEventListener('click',
     candidate.setAttribute('aria-selected', String(active));
   });
   category = tab.dataset.category;
+  document.querySelector('#movie-filters [data-sort="latest"]').textContent = category === 'tv' ? 'On the air' : 'Now playing';
   search.value = '';
   aiPanel.hidden = category !== 'ai';
   document.querySelector('.gallery-tools').hidden = category === 'ai';
@@ -142,7 +199,7 @@ document.querySelectorAll('.tab').forEach((tab) => tab.addEventListener('click',
   document.querySelector('.gallery-footer').hidden = category === 'ai';
   searchWrap.hidden = category === 'uploads' || category === 'weather';
   document.querySelector('#file-input').parentElement.hidden = category === 'weather';
-  document.querySelector('#movie-filters').hidden = category !== 'movies';
+  document.querySelector('#movie-filters').hidden = !['movies', 'tv'].includes(category);
   loadItems();
 }));
 
@@ -187,19 +244,9 @@ document.querySelector('#save-settings').addEventListener('click', async () => {
   button.disabled = true;
   button.textContent = 'Saving…';
   try {
-    await request('/api/settings', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        processing: {
-          dither: document.querySelector('#dither-algorithm').value,
-          smartEnhance: document.querySelector('#smart-enhance').checked,
-          smartCrop: document.querySelector('#smart-crop').checked,
-        },
-        overlay: { mode: document.querySelector('#overlay-mode').value },
-      }),
-    });
-    document.querySelector('#settings-note').textContent = 'Saved. These settings apply the next time you prepare an image.';
+    await saveSettings();
+    await preparePreview();
+    document.querySelector('#settings-note').textContent = 'Saved. The preview reflects your processing settings.';
     notify('Image processing settings saved.');
   } catch (error) {
     document.querySelector('#settings-note').textContent = error.message;
@@ -247,11 +294,7 @@ generateButton.addEventListener('click', async () => {
   generateButton.querySelector('span').textContent = 'Preparing…';
   statusNote.textContent = 'Formatting your image for the six-color display.';
   try {
-    const result = await request('/api/generate', { method: 'POST' });
-    currentImage.hidden = false;
-    emptyState.hidden = true;
-    currentImage.src = `/display.png?t=${Date.now()}`;
-    document.querySelector('#generated-at').textContent = `Last prepared ${new Date(result.updatedAt).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}`;
+    await preparePreview();
     statusNote.textContent = 'Ready at the fixed image URL.';
     notify('Display image is ready.');
   } catch (error) { statusNote.textContent = error.message; notify(error.message); }
@@ -263,6 +306,7 @@ pushButton.addEventListener('click', async () => {
   pushButton.textContent = 'Preparing and sending…';
   statusNote.textContent = 'Preparing the selected image and sending its pre-dithered EPDGZ data to the PhotoFrame.';
   try {
+    await saveSettings();
     const result = await request('/api/push', { method: 'POST' });
     currentImage.hidden = false;
     emptyState.hidden = true;

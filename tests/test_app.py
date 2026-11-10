@@ -27,6 +27,8 @@ from app import (
     font_at_size,
     generate_and_push,
     generate_ai_image,
+    get_sources,
+    poster_request_from_text,
     render_display,
     resize_generated_image,
     run_generate_and_push,
@@ -99,7 +101,7 @@ class DisplayImageTests(unittest.TestCase):
                 self.assertEqual(len(packed), source.width * source.height // 2)
                 self.assertTrue(set(result.tobytes()).issubset(set(EPDGZ_COLOR_INDICES)))
 
-    def test_smart_image_processing_and_overlay_return_display_sized_rgb(self) -> None:
+    def test_image_fit_and_overlay_return_display_sized_rgb(self) -> None:
         source = Image.new("RGB", (240, 120), color=(100, 110, 120))
         for x in range(170, 220):
             for y in range(25, 95):
@@ -107,7 +109,7 @@ class DisplayImageTests(unittest.TestCase):
         buffer = io.BytesIO()
         source.save(buffer, format="PNG")
 
-        fitted = fit_image(buffer.getvalue(), smart_crop=True, smart_enhance=True, target_size=(120, 160))
+        fitted = fit_image(buffer.getvalue(), target_size=(120, 160))
         overlaid = smart_overlay(fitted, ("Test image", "Saturday, 7 November"), font_at_size)
 
         self.assertEqual(overlaid.size, (120, 160))
@@ -176,7 +178,12 @@ class DisplayImageTests(unittest.TestCase):
                     saved = await client.put(
                         "/api/settings",
                         json={
-                            "processing": {"dither": "sierra", "smartEnhance": True, "smartCrop": True},
+                            "processing": {
+                                "dither": "sierra",
+                                "exposure": 0.5,
+                                "contrast": 1.2,
+                                "saturation": 0.8,
+                            },
                             "overlay": {"mode": "smart"},
                         },
                     )
@@ -188,8 +195,46 @@ class DisplayImageTests(unittest.TestCase):
 
         self.assertEqual(saved.status_code, 200)
         self.assertEqual(status.json()["processing"]["dither"], "sierra")
-        self.assertTrue(status.json()["processing"]["smartEnhance"])
+        self.assertEqual(status.json()["processing"]["exposure"], 0.5)
+        self.assertEqual(status.json()["processing"]["contrast"], 1.2)
+        self.assertEqual(status.json()["processing"]["saturation"], 0.8)
         self.assertEqual(status.json()["overlay"]["mode"], "smart")
+
+    def test_settings_endpoint_rejects_out_of_range_adjustments(self) -> None:
+        async def update_settings(config_path: Path) -> httpx.Response:
+            transport = httpx.ASGITransport(app=app)
+            with patch("app.CONFIG_PATH", config_path):
+                async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+                    return await client.put(
+                        "/api/settings",
+                        json={
+                            "processing": {
+                                "dither": "sierra",
+                                "exposure": 3,
+                            },
+                            "overlay": {"mode": "none"},
+                        },
+                    )
+
+        with tempfile.TemporaryDirectory() as directory:
+            response = asyncio.run(update_settings(Path(directory) / "config.json"))
+
+        self.assertEqual(response.status_code, 400)
+
+    def test_fit_image_applies_exposure_contrast_and_saturation(self) -> None:
+        source = Image.new("RGB", (10, 10), color=(60, 100, 140))
+        buffer = io.BytesIO()
+        source.save(buffer, format="PNG")
+
+        adjusted = fit_image(
+            buffer.getvalue(),
+            exposure=1,
+            contrast=0,
+            saturation=0,
+            target_size=(1, 1),
+        )
+
+        self.assertEqual(adjusted.getpixel((0, 0)), (182, 182, 182))
 
     def test_openai_image_generation_decodes_provider_image(self) -> None:
         buffer = io.BytesIO()
@@ -358,6 +403,60 @@ class DisplayImageTests(unittest.TestCase):
         self.assertEqual(order, ["search", "save", "render", "push"])
         self.assertEqual(saved_configs[0]["source"], source)
 
+    def test_generate_and_push_searches_tv_poster(self) -> None:
+        source = {
+            "id": "tmdb-tv-42",
+            "title": "Severance",
+            "image": "https://image.tmdb.org/t/p/w780/severance.jpg",
+            "type": "remote",
+        }
+        saved_configs: list[dict[str, object]] = []
+
+        async def search(category: str, query: str) -> dict[str, object]:
+            self.assertEqual(category, "tv")
+            self.assertEqual(query, "Severance")
+            return {"items": [source]}
+
+        with patch("app.read_config", return_value={"processing": {}, "overlay": {}}):
+            with patch("app.write_config", side_effect=saved_configs.append):
+                with patch("app.get_sources", new=AsyncMock(side_effect=search)):
+                    with patch("app.generate_display", new=AsyncMock(return_value={"updatedAt": "now"})):
+                        with patch("app.push_prepared_image", new=AsyncMock(return_value=200)):
+                            asyncio.run(
+                                run_generate_and_push(
+                                    {"text": "Make a TV show poster for Severance"},
+                                    "request-tv",
+                                )
+                            )
+
+        self.assertEqual(saved_configs[0]["source"], source)
+        self.assertEqual(poster_request_from_text("Create a series poster for Severance"), ("tv", "Severance"))
+
+    def test_tv_source_search_uses_tmdb_tv_posters(self) -> None:
+        async def fetch(_client: object, url: str) -> dict[str, object]:
+            self.assertIn("/search/tv?", url)
+            return {
+                "results": [
+                    {
+                        "id": 42,
+                        "name": "Severance",
+                        "first_air_date": "2022-02-18",
+                        "poster_path": "/severance.jpg",
+                    }
+                ]
+            }
+
+        client_context = MagicMock()
+        client_context.__aenter__ = AsyncMock(return_value=MagicMock())
+        client_context.__aexit__ = AsyncMock(return_value=None)
+        with patch("app.httpx.AsyncClient", return_value=client_context):
+            with patch("app.fetch_json", new=AsyncMock(side_effect=fetch)):
+                result = asyncio.run(get_sources("tv", "Severance"))
+
+        self.assertEqual(result["items"][0]["id"], "tmdb-tv-42")
+        self.assertEqual(result["items"][0]["title"], "Severance")
+        self.assertEqual(result["items"][0]["subtitle"], "2022-02-18")
+
     def test_generate_and_push_method_not_allowed_echoes_original_payload(self) -> None:
         payload = {"text": "Make a movie poster for Dune", "debug": "request-123"}
 
@@ -432,6 +531,15 @@ class DisplayImageTests(unittest.TestCase):
         self.assertEqual(len(background_tasks.tasks), 1)
         self.assertEqual(background_tasks.tasks[0].func, run_generate_and_push)
         self.assertEqual(background_tasks.tasks[0].args[0], payload)
+
+    def test_generate_and_push_accepts_tv_poster_without_image_provider(self) -> None:
+        payload = {"text": "TV show poster for Severance"}
+        background_tasks = BackgroundTasks()
+        with patch("app.available_ai_providers", return_value={"openai": False, "google": False}):
+            response = asyncio.run(generate_and_push(payload, background_tasks))
+
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(background_tasks.tasks[0].func, run_generate_and_push)
 
     def test_generated_image_resize_rejects_unknown_orientation(self) -> None:
             buffer = io.BytesIO()

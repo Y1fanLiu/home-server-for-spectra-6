@@ -1,6 +1,6 @@
 # Frame / Spectra 6
 
-A small Mac-hosted image server for a portrait 1200 × 1600 e-ink display. The configuration page lets you upload an image from a phone, browse movie posters, nature photography, and museum collection images, or select Copenhagen weather. Fixed `/display.png` and `/display.epdgz` URLs serve the latest prepared image as a PNG preview and a display-ready EPDGZ file.
+A small Mac-hosted image server for a portrait 1200 × 1600 e-ink display. The configuration page lets you upload an image from a phone, browse movie and TV posters, nature photography, and museum collection images, or select Copenhagen weather. Fixed `/display.png` and `/display.epdgz` URLs serve the latest prepared image as a PNG preview and a display-ready EPDGZ file.
 
 ## Start on macOS
 
@@ -22,13 +22,13 @@ Uploaded images and configuration are stored under `data/` on the Mac. Image sou
 
 ## Processing and AI image creation
 
-Open **Image processing & overlays** to choose Floyd–Steinberg, Stucki, Burkes, or Sierra dithering; enable optional color/contrast enhancement and focus-aware cropping; and choose a smart title/date, date-only, weather, or no overlay. The smart overlay selects the less detailed edge of the image and adapts its panel/text contrast. Settings are saved in `data/config.json` and apply the next time an image is prepared.
+Open **Image processing & overlays** to choose Floyd–Steinberg, Stucki, Burkes, or Sierra dithering; adjust exposure, contrast, and saturation; and choose a smart title/date, date-only, weather, or no overlay. Slider changes save automatically and refresh the preview. The smart overlay selects the less detailed edge of the image and adapts its panel/text contrast. Settings are saved in `data/config.json`.
 
 The **AI create** tab can generate landscape (4:3) or portrait (3:4) images with OpenAI or Google Gemini. Gemini uses the official `google-genai` SDK, defaults to `gemini-nano-banana-2.1`, and requests 2K image generation with E Ink Spectra 6 composition guidance. Set `OPENAI_API_KEY` and/or `GEMINI_API_KEY` in `.env`, then restart the server; generated images are resized to 1600 × 1200 or 1200 × 1600, saved with uploads, and run through the app's normal display palette, dithering, and EPDGZ pipeline. Model names can be overridden with `OPENAI_IMAGE_MODEL` and `GEMINI_IMAGE_MODEL`. Image-generation API usage may incur provider charges.
 
 ## Generate and send via API
 
-`POST /api/generate-and-push` accepts JSON with a required `text` field (1–2000 characters). If the text contains “movie poster” or “film poster”, the server searches TMDB for the movie title and uses the first matching poster. Otherwise, it sends the text as the prompt to the configured image-generation provider, preferring Gemini when available and OpenAI otherwise. For AI requests, optional `provider` (`google` or `openai`) and `orientation` (`portrait` or `landscape`) fields can override the defaults. Once the payload is validated, the endpoint responds with HTTP `202 Accepted`, echoing the original request in `payload` and providing a `requestId`; image generation, display preparation, and the frame upload continue in the background. Later failures are logged on the server and do not change the already returned response.
+`POST /api/generate-and-push` accepts JSON with a required `text` field (1–2000 characters). If the text requests a movie/film poster or TV/series poster, the server searches TMDB for the title and uses the first matching poster. Otherwise, it sends the text as the prompt to the configured image-generation provider, preferring Gemini when available and OpenAI otherwise. For AI requests, optional `provider` (`google` or `openai`) and `orientation` (`portrait` or `landscape`) fields can override the defaults. Once the payload is validated, the endpoint responds with HTTP `202 Accepted`, echoing the original request in `payload` and providing a `requestId`; image generation, display preparation, and the frame upload continue in the background. Later failures are logged on the server and do not change the already returned response.
 
 ```sh
 curl -X POST http://homeserver.local:3000/api/generate-and-push \

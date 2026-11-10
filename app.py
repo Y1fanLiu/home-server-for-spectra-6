@@ -93,7 +93,12 @@ def read_config() -> dict[str, Any]:
     except FileNotFoundError:
         return {
             "source": {"type": "weather"},
-            "processing": {"dither": "floyd-steinberg", "smartEnhance": False, "smartCrop": False},
+            "processing": {
+                "dither": "floyd-steinberg",
+                "exposure": 0,
+                "contrast": 1,
+                "saturation": 1,
+            },
             "overlay": {"mode": "weather"},
             "updatedAt": None,
         }
@@ -113,20 +118,25 @@ async def fetch_json(client: httpx.AsyncClient, url: str) -> dict[str, Any]:
 
 async def get_sources(category: str, query: str, sort: str = "trending") -> dict[str, Any]:
     async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
-        if category == "movies":
+        if category in {"movies", "tv"}:
             api_key = '45a3b1eee18df0ad1f13046fffd57579'
             if not api_key:
                 return {"items": [], "needsKey": True}
-            endpoint = "search/movie" if query else ("movie/now_playing" if sort == "latest" else "trending/movie/week")
+            media_type = "movie" if category == "movies" else "tv"
+            endpoint = f"search/{media_type}" if query else f"trending/{media_type}/week"
+            if not query and sort == "latest":
+                endpoint = "movie/now_playing" if category == "movies" else "tv/on_the_air"
             params = {"api_key": api_key, "language": "en-US"}
             if query:
                 params["query"] = query
             result = await fetch_json(client, f"https://api.themoviedb.org/3/{endpoint}?{urlencode(params)}")
             items = [
                 {
-                    "id": f"tmdb-{item['id']}",
-                    "title": item.get("title") or item.get("name") or "Movie poster",
-                    "subtitle": item.get("release_date", ""),
+                    "id": f"tmdb-{item['id']}" if category == "movies" else f"tmdb-tv-{item['id']}",
+                    "title": item.get("title")
+                    or item.get("name")
+                    or ("Movie poster" if category == "movies" else "TV show poster"),
+                    "subtitle": item.get("release_date") or item.get("first_air_date", ""),
                     "image": f"https://image.tmdb.org/t/p/w780{item['poster_path']}",
                     "type": "remote",
                 }
@@ -277,8 +287,9 @@ def render_display(
     settings = processing or {}
     image = fit_image(
         image_bytes,
-        smart_crop=settings.get("smartCrop") is True,
-        smart_enhance=settings.get("smartEnhance") is True,
+        exposure=settings.get("exposure", 0),
+        contrast=settings.get("contrast", 1),
+        saturation=settings.get("saturation", 1),
         target_size=DISPLAY_SIZE,
     )
     if overlay_lines:
@@ -449,21 +460,28 @@ async def put_settings(payload: dict[str, Any]) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail="Provide processing and overlay settings.")
 
     dither = processing.get("dither")
-    smart_enhance = processing.get("smartEnhance")
-    smart_crop = processing.get("smartCrop")
+    exposure = processing.get("exposure", 0)
+    contrast = processing.get("contrast", 1)
+    saturation = processing.get("saturation", 1)
     overlay_mode = overlay.get("mode")
     if not isinstance(dither, str) or dither not in DITHER_ALGORITHMS:
         raise HTTPException(status_code=400, detail="Choose a supported dithering algorithm.")
-    if not isinstance(smart_enhance, bool) or not isinstance(smart_crop, bool):
-        raise HTTPException(status_code=400, detail="Smart enhancement and crop settings must be boolean.")
+    if (
+        any(isinstance(value, bool) or not isinstance(value, (int, float)) for value in (exposure, contrast, saturation))
+        or not -2 <= exposure <= 2
+        or not 0 <= contrast <= 2
+        or not 0 <= saturation <= 2
+    ):
+        raise HTTPException(status_code=400, detail="Exposure must be -2 to 2 EV; contrast and saturation must be 0 to 2.")
     if not isinstance(overlay_mode, str) or overlay_mode not in OVERLAY_MODES:
         raise HTTPException(status_code=400, detail="Choose a supported smart overlay mode.")
 
     config = read_config()
     config["processing"] = {
         "dither": dither,
-        "smartEnhance": smart_enhance,
-        "smartCrop": smart_crop,
+        "exposure": exposure,
+        "contrast": contrast,
+        "saturation": saturation,
     }
     config["overlay"] = {"mode": overlay_mode}
     await asyncio.to_thread(write_config, config)
@@ -607,22 +625,28 @@ def store_generated_image(image_bytes: bytes, extension: str, title: str) -> dic
     }
 
 
-def movie_title_from_request(text: str) -> str:
-    match = re.search(r"\b(?:movie|film)\s+poster\b", text, re.IGNORECASE)
+def poster_request_from_text(text: str) -> tuple[str, str] | None:
+    match = re.search(
+        r"\b(?:(?P<movie>movie|film)|(?P<tv>tv(?:\s+show)?|television\s+(?:show|series)|(?:tv\s+)?series))\s+poster\b",
+        text,
+        re.IGNORECASE,
+    )
     if match is None:
-        return ""
+        return None
+
+    category = "movies" if match.group("movie") else "tv"
     before = text[:match.start()].strip(" \t\r\n.,!?-:")
     after = text[match.end():].strip(" \t\r\n.,!?-:")
     after = re.sub(r"^(?:(?:for|of|about|featuring|based on)\s+)", "", after, flags=re.IGNORECASE)
     if after:
-        return after
+        return category, after
     before = re.sub(
         r"^(?:(?:please\s+)?(?:make|create|find|show)(?:\s+me)?(?:\s+(?:a|the))?\s+)",
         "",
         before,
         flags=re.IGNORECASE,
     )
-    return before
+    return category, before
 
 
 @app.get("/api/sources")
@@ -727,9 +751,11 @@ async def generate_and_push(
         raise HTTPException(status_code=400, detail="Provide text between 1 and 2000 characters.")
     text = text.strip()
 
-    if re.search(r"\b(?:movie|film)\s+poster\b", text, re.IGNORECASE):
-        if not movie_title_from_request(text):
-            raise HTTPException(status_code=400, detail="Include a movie title with “movie poster” or “film poster”.")
+    poster_request = poster_request_from_text(text)
+    if poster_request:
+        if not poster_request[1]:
+            content_type = "movie" if poster_request[0] == "movies" else "TV show"
+            raise HTTPException(status_code=400, detail=f"Include a {content_type} title with the poster request.")
     else:
         providers = available_ai_providers()
         provider = payload.get("provider")
@@ -761,19 +787,22 @@ async def generate_and_push(
 async def run_generate_and_push(payload: dict[str, Any], request_id: str) -> None:
     try:
         text = payload["text"].strip()
-        if re.search(r"\b(?:movie|film)\s+poster\b", text, re.IGNORECASE):
-            query = movie_title_from_request(text)
+        poster_request = poster_request_from_text(text)
+        if poster_request:
+            category, query = poster_request
             try:
-                result = await get_sources("movies", query)
+                result = await get_sources(category, query)
             except httpx.HTTPError as error:
-                logger.warning("Request %s: TMDB movie poster lookup failed: %s", request_id, error)
+                media_name = "movie" if category == "movies" else "TV"
+                logger.warning("Request %s: TMDB %s poster lookup failed: %s", request_id, media_name, error)
                 return
             items = result.get("items", [])
             if not items:
-                logger.error("Request %s: no movie poster found for %r.", request_id, query)
+                media_name = "movie" if category == "movies" else "TV"
+                logger.error("Request %s: no %s poster found for %r.", request_id, media_name, query)
                 return
             source = items[0]
-            source_type = "movie_poster"
+            source_type = "movie_poster" if category == "movies" else "tv_poster"
         else:
             providers = available_ai_providers()
             provider = payload.get("provider")
