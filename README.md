@@ -28,6 +28,16 @@ The **AI create** tab can generate landscape (4:3) or portrait (3:4) images with
 
 ## Generate and send via API
 
+`GET /api/now-playing` returns the metadata for the media currently playing on the Apple TV named `Cash me outside`. It returns HTTP `503` if that Apple TV cannot be found and HTTP `502` if metadata retrieval fails.
+
+`POST /api/assistant` accepts `{"prompt":"..."}` (1–2000 characters) and uses the Google AI Studio key in `GEMINI_API_KEY` (or `GOOGLE_API_KEY`). Gemini can answer general questions directly or call the available app tools: get display status, search image sources, get now-playing metadata, and generate and push an image. For requests based on currently playing media, it can first fetch the metadata and then pass the title into image generation. The response includes the assistant's `response` and an `actions` list describing tool calls and results. The model defaults to `gemini-2.5-flash`; override it with `GEMINI_ASSISTANT_MODEL`.
+
+```sh
+curl -X POST http://homeserver.local:3000/api/assistant \
+  -H 'Content-Type: application/json' \
+  -d '{"prompt":"Make a poster inspired by what is playing now"}'
+```
+
 `POST /api/generate-and-push` accepts JSON with a required `text` field (1–2000 characters). If the text requests a movie/film poster or TV/series poster, the server searches TMDB for the title and uses the first matching poster. Otherwise, it sends the text as the prompt to the configured image-generation provider, preferring Gemini when available and OpenAI otherwise. For AI requests, optional `provider` (`google` or `openai`) and `orientation` (`portrait` or `landscape`) fields can override the defaults. Once the payload is validated, the endpoint responds with HTTP `202 Accepted`, echoing the original request in `payload` and providing a `requestId`; image generation, display preparation, and the frame upload continue in the background. Later failures are logged on the server and do not change the already returned response.
 
 ```sh

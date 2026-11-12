@@ -319,5 +319,164 @@ pushButton.addEventListener('click', async () => {
 });
 
 currentImage.addEventListener('error', () => { currentImage.hidden = true; emptyState.hidden = false; });
+
+const apiEndpoints = {
+  status: { method: 'GET', path: '/api/status' },
+  'config-get': { method: 'GET', path: '/api/config' },
+  'config-put': {
+    method: 'PUT',
+    path: '/api/config',
+    body: { source: { type: 'weather' } },
+  },
+  'settings-put': {
+    method: 'PUT',
+    path: '/api/settings',
+    body: {
+      processing: { dither: 'floyd-steinberg', exposure: 0, contrast: 1, saturation: 1 },
+      overlay: { mode: 'weather' },
+    },
+  },
+  sources: { method: 'GET', path: '/api/sources', query: 'category=nature&q=coast' },
+  'uploads-get': { method: 'GET', path: '/api/uploads' },
+  'uploads-post': { method: 'POST', path: '/api/uploads', file: true },
+  'upload-get': { method: 'GET', path: '/uploads/filename' },
+  'ai-generate': {
+    method: 'POST',
+    path: '/api/ai/generate',
+    body: { provider: 'google', prompt: 'A quiet Danish coastline at dusk', orientation: 'portrait' },
+  },
+  generate: { method: 'POST', path: '/api/generate' },
+  push: { method: 'POST', path: '/api/push' },
+  'generate-and-push': {
+    method: 'POST',
+    path: '/api/generate-and-push',
+    body: { text: 'A quiet Danish coastline at dusk', provider: 'google', orientation: 'portrait' },
+  },
+  'now-playing': { method: 'GET', path: '/api/now-playing' },
+  assistant: {
+    method: 'POST',
+    path: '/api/assistant',
+    body: { prompt: 'What is currently playing? Do not create an image.' },
+  },
+  'display-png': { method: 'GET', path: '/display.png' },
+  'display-epdgz': { method: 'GET', path: '/display.epdgz' },
+};
+
+const apiEndpointSelect = document.querySelector('#api-endpoint');
+const apiMethodSelect = document.querySelector('#api-method');
+const apiPathInput = document.querySelector('#api-path');
+const apiQueryInput = document.querySelector('#api-query');
+const apiBodyInput = document.querySelector('#api-body');
+const apiFileInput = document.querySelector('#api-file');
+const apiSendButton = document.querySelector('#api-send');
+const apiRequestStatus = document.querySelector('#api-request-status');
+const apiResponseOutput = document.querySelector('#api-response-output');
+const apiResponseLink = document.querySelector('#api-response-link');
+let apiResponseObjectUrl;
+
+function updateApiWorkbench() {
+  const endpoint = apiEndpoints[apiEndpointSelect.value];
+  apiMethodSelect.value = endpoint.method;
+  apiPathInput.value = endpoint.path;
+  apiQueryInput.value = endpoint.query || '';
+  apiBodyInput.value = endpoint.body ? JSON.stringify(endpoint.body, null, 2) : '';
+  const isUpload = Boolean(endpoint.file) && apiMethodSelect.value === 'POST';
+  document.querySelector('#api-file-field').hidden = !isUpload;
+  document.querySelector('#api-query-field').hidden = !['GET', 'HEAD'].includes(apiMethodSelect.value);
+  document.querySelector('#api-body-field').hidden = isUpload || ['GET', 'HEAD'].includes(apiMethodSelect.value);
+}
+
+async function sendApiWorkbenchRequest() {
+  const method = apiMethodSelect.value;
+  const path = apiPathInput.value.trim();
+  if (!path.startsWith('/') || path.startsWith('//')) {
+    apiRequestStatus.textContent = 'Path must be relative to this server.';
+    return;
+  }
+
+  const url = new URL(path, window.location.origin);
+  if (url.origin !== window.location.origin) {
+    apiRequestStatus.textContent = 'Only same-origin requests are allowed.';
+    return;
+  }
+  if (apiQueryInput.value.trim()) {
+    const query = new URLSearchParams(apiQueryInput.value.trim());
+    query.forEach((value, key) => url.searchParams.set(key, value));
+  }
+
+  const options = { method };
+  const isUpload = apiEndpointSelect.value === 'uploads-post' && method === 'POST';
+  if (isUpload) {
+    if (!apiFileInput.files[0]) {
+      apiRequestStatus.textContent = 'Choose an image file to upload.';
+      return;
+    }
+    const formData = new FormData();
+    formData.append('image', apiFileInput.files[0]);
+    options.body = formData;
+  } else if (!['GET', 'HEAD'].includes(method) && apiBodyInput.value.trim()) {
+    try {
+      options.headers = { 'Content-Type': 'application/json' };
+      options.body = JSON.stringify(JSON.parse(apiBodyInput.value));
+    } catch {
+      apiRequestStatus.textContent = 'Request body is not valid JSON.';
+      return;
+    }
+  }
+
+  apiSendButton.disabled = true;
+  apiRequestStatus.textContent = 'Sending…';
+  apiResponseOutput.textContent = '';
+  apiResponseLink.hidden = true;
+  if (apiResponseObjectUrl) {
+    URL.revokeObjectURL(apiResponseObjectUrl);
+    apiResponseObjectUrl = null;
+  }
+
+  const startedAt = performance.now();
+  try {
+    const response = await fetch(url, options);
+    const elapsed = Math.round(performance.now() - startedAt);
+    const contentType = response.headers.get('content-type') || '';
+    if (response.status === 204 || method === 'HEAD') {
+      apiResponseOutput.textContent = '(empty response)';
+    } else if (contentType.startsWith('application/json')) {
+      const text = await response.text();
+      try {
+        apiResponseOutput.textContent = JSON.stringify(JSON.parse(text), null, 2);
+      } catch {
+        apiResponseOutput.textContent = text;
+      }
+    } else if (contentType.startsWith('text/')) {
+      apiResponseOutput.textContent = await response.text();
+    } else {
+      const blob = await response.blob();
+      apiResponseObjectUrl = URL.createObjectURL(blob);
+      apiResponseLink.href = apiResponseObjectUrl;
+      apiResponseLink.download = url.pathname.split('/').pop() || 'response';
+      apiResponseLink.textContent = `Open or download ${contentType || 'response'}`;
+      apiResponseLink.hidden = false;
+      apiResponseOutput.textContent = `Binary response · ${contentType || 'unknown type'} · ${blob.size.toLocaleString()} bytes`;
+    }
+    apiRequestStatus.textContent = `${response.status} ${response.statusText} · ${elapsed} ms`;
+  } catch (error) {
+    apiResponseOutput.textContent = error.message;
+    apiRequestStatus.textContent = 'Request failed';
+  } finally {
+    apiSendButton.disabled = false;
+  }
+}
+
+apiEndpointSelect.addEventListener('change', updateApiWorkbench);
+apiMethodSelect.addEventListener('change', () => {
+  const endpoint = apiEndpoints[apiEndpointSelect.value];
+  const isUpload = Boolean(endpoint.file) && apiMethodSelect.value === 'POST';
+  document.querySelector('#api-file-field').hidden = !isUpload;
+  document.querySelector('#api-query-field').hidden = !['GET', 'HEAD'].includes(apiMethodSelect.value);
+  document.querySelector('#api-body-field').hidden = isUpload || ['GET', 'HEAD'].includes(apiMethodSelect.value);
+});
+apiSendButton.addEventListener('click', sendApiWorkbenchRequest);
+updateApiWorkbench();
+
 loadItems();
 loadStatus();

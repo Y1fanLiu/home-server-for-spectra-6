@@ -11,7 +11,9 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
+from google.genai.errors import ServerError
 from PIL import Image
+from fastapi.responses import JSONResponse
 from starlette.background import BackgroundTasks
 
 from app import (
@@ -139,6 +141,129 @@ class DisplayImageTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.headers["content-type"], "application/gzip")
         self.assertEqual(response.content, EPDGZ_OUTPUT_PATH.read_bytes())
+
+    def test_now_playing_endpoint_returns_metadata(self) -> None:
+        metadata = {
+            "device": {"name": "Apple TV"},
+            "playback": {"title": "Test media"},
+        }
+
+        async def get_metadata() -> httpx.Response:
+            transport = httpx.ASGITransport(app=app)
+            with patch("app.fetch_now_playing_metadata", new=AsyncMock(return_value=metadata)):
+                async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+                    return await client.get("/api/now-playing")
+
+        response = asyncio.run(get_metadata())
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), metadata)
+
+    def test_now_playing_endpoint_reports_unavailable_device(self) -> None:
+        async def get_metadata() -> httpx.Response:
+            transport = httpx.ASGITransport(app=app)
+            with patch(
+                "app.fetch_now_playing_metadata",
+                new=AsyncMock(side_effect=RuntimeError("No Apple TVs found.")),
+            ):
+                async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+                    return await client.get("/api/now-playing")
+
+        response = asyncio.run(get_metadata())
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json()["detail"], "No Apple TVs found.")
+
+    def test_assistant_chains_now_playing_into_generate_and_push(self) -> None:
+        def model_response(text: str = "", tool_call: object | None = None) -> SimpleNamespace:
+            parts = [SimpleNamespace(function_call=tool_call)] if tool_call else []
+            return SimpleNamespace(
+                candidates=[SimpleNamespace(content=SimpleNamespace(parts=parts))],
+                text=text,
+            )
+
+        model_responses = [
+            model_response(
+                tool_call=SimpleNamespace(name="get_now_playing", args={}),
+            ),
+            model_response(
+                tool_call=SimpleNamespace(
+                    name="generate_and_push",
+                    args={"text": "Make a movie poster for Dune"},
+                ),
+            ),
+            model_response("The Dune poster request was accepted."),
+        ]
+        metadata = {"playback": {"title": "Dune", "media_type": "Video"}}
+
+        async def run_prompt() -> dict[str, object]:
+            with patch("app._call_assistant_model", side_effect=model_responses):
+                with patch("app.fetch_now_playing_metadata", new=AsyncMock(return_value=metadata)):
+                    with patch(
+                        "app.generate_and_push",
+                        new=AsyncMock(
+                            return_value=JSONResponse(
+                                status_code=202,
+                                content={"status": "accepted", "requestId": "request-1"},
+                            )
+                        ),
+                    ) as generate:
+                        result = await run_assistant_prompt("Make a poster for what's playing")
+                        self.assertEqual(
+                            generate.call_args.args[0]["text"],
+                            "Make a movie poster for Dune",
+                        )
+                        return result
+
+        result = asyncio.run(run_prompt())
+
+        self.assertEqual(result["response"], "The Dune poster request was accepted.")
+        self.assertEqual(
+            [action["tool"] for action in result["actions"]],
+            ["get_now_playing", "generate_and_push"],
+        )
+
+    def test_assistant_endpoint_answers_general_questions_without_tools(self) -> None:
+        async def ask_assistant() -> httpx.Response:
+            transport = httpx.ASGITransport(app=app)
+            with patch("app.run_assistant_prompt", new=AsyncMock(return_value={
+                "response": "Hello!",
+                "actions": [],
+            })):
+                async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+                    return await client.post("/api/assistant", json={"prompt": "Hello"})
+
+        response = asyncio.run(ask_assistant())
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"response": "Hello!", "actions": []})
+
+    def test_assistant_endpoint_rejects_empty_prompts(self) -> None:
+        async def ask_assistant() -> httpx.Response:
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+                return await client.post("/api/assistant", json={"prompt": " "})
+
+        response = asyncio.run(ask_assistant())
+
+        self.assertEqual(response.status_code, 400)
+
+    def test_assistant_endpoint_returns_retryable_status_when_gemini_is_overloaded(self) -> None:
+        async def ask_assistant() -> httpx.Response:
+            transport = httpx.ASGITransport(app=app)
+            error = ServerError(
+                503,
+                {"error": {"code": 503, "message": "Model is busy", "status": "UNAVAILABLE"}},
+                None,
+            )
+            with patch("app.run_assistant_prompt", new=AsyncMock(side_effect=error)):
+                async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+                    return await client.post("/api/assistant", json={"prompt": "Hello"})
+
+        response = asyncio.run(ask_assistant())
+
+        self.assertEqual(response.status_code, 503)
+        self.assertIn("temporarily busy", response.json()["detail"])
 
     def test_push_endpoint_sends_prepared_epdgz_to_photoframe(self) -> None:
         epdgz_data = b"\x1f\x8bprepared-epdgz"
