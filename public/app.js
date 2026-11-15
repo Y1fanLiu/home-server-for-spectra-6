@@ -43,7 +43,11 @@ function escapeHtml(value) {
 
 function cardMarkup(item) {
   const isSelected = selected?.id === item.id;
-  return `<button class="source-card${isSelected ? ' selected' : ''}" data-id="${encodeURIComponent(item.id)}" data-category="${category}" aria-label="Select ${escapeHtml(item.title)}" aria-pressed="${isSelected}"><div class="source-image-wrap"><img src="${escapeHtml(item.image)}" alt="" loading="lazy"><span class="selected-check">✓</span></div><span class="source-caption">${escapeHtml(item.title)}</span><span class="source-subtitle">${escapeHtml(item.subtitle || '')}</span></button>`;
+  const title = item.filename || item.title;
+  const deleteButton = item.type === 'upload'
+    ? `<button class="delete-image" type="button" data-filename="${encodeURIComponent(item.filename)}" aria-label="Delete ${escapeHtml(title)}" title="Delete image">×</button>`
+    : '';
+  return `<div class="source-card${isSelected ? ' selected' : ''}" data-category="${category}"><button class="source-select" type="button" data-id="${encodeURIComponent(item.id)}" data-category="${category}" aria-label="Select ${escapeHtml(title)}" aria-pressed="${isSelected}"><div class="source-image-wrap"><img src="${escapeHtml(item.image)}" alt="" loading="lazy"><span class="selected-check">✓</span></div><span class="source-caption">${escapeHtml(title)}</span><span class="source-subtitle">${escapeHtml(item.subtitle || '')}</span></button>${deleteButton}</div>`;
 }
 
 function renderItems() {
@@ -219,7 +223,22 @@ document.querySelector('#movie-filters').addEventListener('click', (event) => {
 search.addEventListener('input', () => { clearTimeout(searchTimer); searchTimer = setTimeout(loadItems, 450); });
 search.addEventListener('keydown', (event) => { if (event.key === 'Enter') loadItems(); });
 gallery.addEventListener('click', (event) => {
-  const card = event.target.closest('.source-card');
+  const deleteButton = event.target.closest('.delete-image');
+  if (deleteButton) {
+    const filename = decodeURIComponent(deleteButton.dataset.filename);
+    if (!window.confirm(`Delete "${filename}" from your image library?`)) return;
+    deleteButton.disabled = true;
+    request(`/api/uploads/${encodeURIComponent(filename)}`, { method: 'DELETE' })
+      .then(() => {
+        items = items.filter((item) => item.filename !== filename);
+        renderItems();
+        notify('Image deleted.');
+      })
+      .catch((error) => notify(error.message))
+      .finally(() => { deleteButton.disabled = false; });
+    return;
+  }
+  const card = event.target.closest('.source-select');
   if (!card) return;
   const item = items.find((candidate) => candidate.id === decodeURIComponent(card.dataset.id));
   if (item) choose(item);
@@ -340,7 +359,9 @@ const apiEndpoints = {
   sources: { method: 'GET', path: '/api/sources', query: 'category=nature&q=coast' },
   'uploads-get': { method: 'GET', path: '/api/uploads' },
   'uploads-post': { method: 'POST', path: '/api/uploads', file: true },
+  'upload-delete': { method: 'DELETE', path: '/api/uploads/filename' },
   'upload-get': { method: 'GET', path: '/uploads/filename' },
+  'current-image': { method: 'GET', path: '/api/current-image' },
   'ai-generate': {
     method: 'POST',
     path: '/api/ai/generate',
@@ -384,7 +405,7 @@ function updateApiWorkbench() {
   const isUpload = Boolean(endpoint.file) && apiMethodSelect.value === 'POST';
   document.querySelector('#api-file-field').hidden = !isUpload;
   document.querySelector('#api-query-field').hidden = !['GET', 'HEAD'].includes(apiMethodSelect.value);
-  document.querySelector('#api-body-field').hidden = isUpload || ['GET', 'HEAD'].includes(apiMethodSelect.value);
+  document.querySelector('#api-body-field').hidden = isUpload || ['GET', 'HEAD', 'DELETE'].includes(apiMethodSelect.value);
 }
 
 async function sendApiWorkbenchRequest() {
@@ -474,7 +495,7 @@ apiMethodSelect.addEventListener('change', () => {
   const isUpload = Boolean(endpoint.file) && apiMethodSelect.value === 'POST';
   document.querySelector('#api-file-field').hidden = !isUpload;
   document.querySelector('#api-query-field').hidden = !['GET', 'HEAD'].includes(apiMethodSelect.value);
-  document.querySelector('#api-body-field').hidden = isUpload || ['GET', 'HEAD'].includes(apiMethodSelect.value);
+  document.querySelector('#api-body-field').hidden = isUpload || ['GET', 'HEAD', 'DELETE'].includes(apiMethodSelect.value);
 });
 apiSendButton.addEventListener('click', sendApiWorkbenchRequest);
 updateApiWorkbench();

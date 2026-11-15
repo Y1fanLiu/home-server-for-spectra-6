@@ -625,6 +625,24 @@ def render_display(
     temporary_epdgz_path.replace(EPDGZ_OUTPUT_PATH)
 
 
+def source_image_name(source: dict[str, Any]) -> str:
+    return str(
+        source.get("filename")
+        or source.get("title")
+        or source.get("id")
+        or "Copenhagen weather"
+    )
+
+
+def record_frame_image(name: str) -> None:
+    config = read_config()
+    config["lastPushedImage"] = {
+        "name": name,
+        "sentAt": datetime.now(WEATHER_TIMEZONE).isoformat(),
+    }
+    write_config(config)
+
+
 def encode_epdgz(indexed_image: Image.Image) -> bytes:
     if indexed_image.mode != "P":
         raise ValueError("EPDGZ encoding requires an indexed image.")
@@ -671,7 +689,12 @@ async def generate_display() -> dict[str, Any]:
         await asyncio.to_thread(render_display, image_bytes, overlay_lines, processing)
         config["updatedAt"] = datetime.now(WEATHER_TIMEZONE).isoformat()
         await asyncio.to_thread(write_config, config)
-        return {"updatedAt": config["updatedAt"], "width": DISPLAY_SIZE[0], "height": DISPLAY_SIZE[1]}
+        return {
+            "updatedAt": config["updatedAt"],
+            "width": DISPLAY_SIZE[0],
+            "height": DISPLAY_SIZE[1],
+            "name": source_image_name(source),
+        }
 
 
 async def generate_on_start() -> None:
@@ -987,7 +1010,7 @@ async def list_uploads() -> list[dict[str, str]]:
         {
             "id": f"upload-{path.name}",
             "filename": path.name,
-            "title": "Uploaded image",
+            "title": path.name,
             "image": f"/uploads/{path.name}",
             "type": "upload",
         }
@@ -1012,10 +1035,28 @@ async def upload_image(image: UploadFile = File(...)) -> dict[str, str]:
     return {
         "id": f"upload-{filename}",
         "filename": filename,
-        "title": image.filename or "Uploaded image",
+        "title": filename,
         "image": f"/uploads/{filename}",
         "type": "upload",
     }
+
+
+@app.delete("/api/uploads/{filename}")
+async def delete_upload(filename: str) -> dict[str, str]:
+    safe_filename = Path(filename).name
+    if not safe_filename or safe_filename.startswith("."):
+        raise HTTPException(status_code=404, detail="Image not found.")
+
+    path = UPLOADS_DIR / safe_filename
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Image not found.")
+
+    source = read_config().get("source", {})
+    if source.get("type") == "upload" and Path(str(source.get("filename", ""))).name == safe_filename:
+        raise HTTPException(status_code=409, detail="Select another image before deleting the selected image.")
+
+    await asyncio.to_thread(path.unlink)
+    return {"status": "deleted", "filename": safe_filename}
 
 
 @app.get("/uploads/{filename}")
@@ -1042,12 +1083,18 @@ async def push_to_photoframe() -> dict[str, Any]:
     try:
         result = await generate_display()
         frame_status = await push_prepared_image()
+        await asyncio.to_thread(record_frame_image, result["name"])
     except HTTPException:
         raise
     except (httpx.HTTPError, OSError, ValueError) as error:
         logger.exception("Could not push display image to the PhotoFrame.")
         raise HTTPException(status_code=502, detail="The image could not be sent to the PhotoFrame.") from error
-    return {"status": "success", "updatedAt": result["updatedAt"], "frameStatusCode": frame_status}
+    return {
+        "status": "success",
+        "updatedAt": result["updatedAt"],
+        "frameStatusCode": frame_status,
+        "name": result["name"],
+    }
 
 
 async def push_prepared_image() -> int:
@@ -1156,6 +1203,7 @@ async def run_generate_and_push(payload: dict[str, Any], request_id: str) -> Non
         await asyncio.to_thread(write_config, config)
         generated = await generate_display()
         frame_status = await push_prepared_image()
+        await asyncio.to_thread(record_frame_image, generated["name"])
         logger.info(
             "Request %s completed: source_type=%s source=%s updated_at=%s frame_status=%s",
             request_id,
@@ -1206,6 +1254,17 @@ async def status() -> dict[str, Any]:
         "ready": OUTPUT_PATH.is_file(),
         "outputUrl": "/display.png",
         "epdgzOutputUrl": "/display.epdgz",
+    }
+
+
+@app.get("/api/current-image")
+async def current_image() -> dict[str, str | None]:
+    last_pushed = read_config().get("lastPushedImage")
+    if not isinstance(last_pushed, dict):
+        return {"name": None, "sentAt": None}
+    return {
+        "name": last_pushed.get("name"),
+        "sentAt": last_pushed.get("sentAt"),
     }
 
 

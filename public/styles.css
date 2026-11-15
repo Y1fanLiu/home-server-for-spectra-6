@@ -60,17 +60,21 @@ kbd { padding: 2px 5px; border: 1px solid #e6e3db; color: #99978f; font: 10px va
 .upload-button { height: 38px; flex: 0 0 auto; display: inline-flex; align-items: center; gap: 8px; padding: 0 12px; border: 1px solid var(--line); color: var(--ink); font-size: 11px; cursor: pointer; }
 .upload-button:hover { border-color: var(--coral); color: var(--coral); }
 .gallery { min-height: 405px; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 13px; align-content: start; }
-.source-card { position: relative; min-width: 0; padding: 0; border: 1px solid transparent; background: none; text-align: left; cursor: pointer; }
+.source-card { position: relative; min-width: 0; border: 1px solid transparent; }
 .source-card:hover { border-color: #bbb5a8; }
 .source-card.selected { border-color: var(--coral); box-shadow: 0 0 0 1px var(--coral); }
-.source-image-wrap { position: relative; overflow: hidden; aspect-ratio: 3 / 4; background: #e6e2d8; }
+.source-select { display: block; width: 100%; padding: 0; border: 0; background: none; text-align: left; cursor: pointer; }
 .source-card[data-category="movies"] .source-image-wrap { aspect-ratio: 2 / 3; }
-.source-card img { display: block; width: 100%; height: 100%; object-fit: cover; transition: transform .35s ease; }
+.source-image-wrap { position: relative; overflow: hidden; aspect-ratio: 3 / 4; background: #e6e2d8; }
+.source-select img { display: block; width: 100%; height: 100%; object-fit: cover; transition: transform .35s ease; }
 .source-card:hover img { transform: scale(1.035); }
 .selected-check { position: absolute; top: 7px; right: 7px; display: none; place-items: center; width: 21px; height: 21px; border-radius: 50%; background: var(--coral); color: white; font-size: 13px; }
 .source-card.selected .selected-check { display: grid; }
 .source-caption { display: block; overflow: hidden; margin: 7px 1px 2px; color: #4e4d47; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .source-subtitle { display: block; overflow: hidden; margin: 0 1px; color: #99978f; font: 9px var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+.delete-image { position: absolute; top: 6px; left: 6px; display: grid; place-items: center; width: 25px; height: 25px; padding: 0; border: 0; border-radius: 50%; background: #22221fcc; color: white; font-size: 18px; line-height: 1; cursor: pointer; }
+.delete-image:hover { background: var(--coral); }
+.delete-image:disabled { opacity: .65; cursor: wait; }
 .gallery-message { grid-column: 1 / -1; display: grid; min-height: 230px; align-content: center; justify-items: center; padding: 25px; color: #838178; text-align: center; font-size: 12px; line-height: 1.7; }
 .gallery-message strong { color: var(--ink); font-weight: 600; }
 .gallery-message .message-mark { display: grid; place-items: center; width: 41px; height: 41px; margin-bottom: 13px; border: 1px solid var(--line); color: var(--coral); font-size: 20px; }

@@ -145,6 +145,66 @@ class DisplayImageTests(unittest.TestCase):
         self.assertEqual(response.headers["content-type"], "application/gzip")
         self.assertEqual(response.content, EPDGZ_OUTPUT_PATH.read_bytes())
 
+    def test_upload_library_lists_filename_and_deletes_image(self) -> None:
+        async def manage_uploads(
+            uploads_path: Path,
+            config_path: Path,
+        ) -> tuple[httpx.Response, httpx.Response, bool]:
+            (uploads_path / "photo.png").write_bytes(b"image")
+            transport = httpx.ASGITransport(app=app)
+            with patch("app.UPLOADS_DIR", uploads_path):
+                with patch("app.CONFIG_PATH", config_path):
+                    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+                        listing = await client.get("/api/uploads")
+                        deleted = await client.delete("/api/uploads/photo.png")
+                        return listing, deleted, (uploads_path / "photo.png").exists()
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            uploads_path = root / "uploads"
+            uploads_path.mkdir()
+            listing, deleted, file_exists = asyncio.run(manage_uploads(uploads_path, root / "config.json"))
+
+        self.assertEqual(listing.status_code, 200)
+        self.assertEqual(listing.json()[0]["title"], "photo.png")
+        self.assertEqual(deleted.status_code, 200)
+        self.assertEqual(deleted.json(), {"status": "deleted", "filename": "photo.png"})
+        self.assertFalse(file_exists)
+
+    def test_selected_upload_cannot_be_deleted(self) -> None:
+        async def delete_selected(uploads_path: Path) -> tuple[httpx.Response, bool]:
+            (uploads_path / "photo.png").write_bytes(b"image")
+            transport = httpx.ASGITransport(app=app)
+            with patch("app.UPLOADS_DIR", uploads_path):
+                with patch("app.read_config", return_value={"source": {"type": "upload", "filename": "photo.png"}}):
+                    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+                        response = await client.delete("/api/uploads/photo.png")
+                        return response, (uploads_path / "photo.png").is_file()
+
+        with tempfile.TemporaryDirectory() as directory:
+            uploads_path = Path(directory)
+            response, file_exists = asyncio.run(delete_selected(uploads_path))
+
+        self.assertEqual(response.status_code, 409)
+        self.assertTrue(file_exists)
+
+    def test_current_image_endpoint_returns_latest_successful_send(self) -> None:
+        async def get_current_image(config_path: Path) -> httpx.Response:
+            config_path.write_text(
+                json.dumps({"lastPushedImage": {"name": "photo.png", "sentAt": "2026-11-15T12:00:00+01:00"}}),
+                encoding="utf-8",
+            )
+            transport = httpx.ASGITransport(app=app)
+            with patch("app.CONFIG_PATH", config_path):
+                async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+                    return await client.get("/api/current-image")
+
+        with tempfile.TemporaryDirectory() as directory:
+            response = asyncio.run(get_current_image(Path(directory) / "config.json"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"name": "photo.png", "sentAt": "2026-11-15T12:00:00+01:00"})
+
     def test_now_playing_endpoint_returns_metadata(self) -> None:
         metadata = {
             "device": {"name": "Apple TV"},
@@ -364,10 +424,11 @@ class DisplayImageTests(unittest.TestCase):
             epdgz_path.write_bytes(epdgz_data)
             transport = httpx.ASGITransport(app=app)
             async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-                with patch("app.generate_display", new=AsyncMock(return_value={"updatedAt": "now"})):
+                with patch("app.generate_display", new=AsyncMock(return_value={"updatedAt": "now", "name": "weather"})):
                     with patch("app.EPDGZ_OUTPUT_PATH", epdgz_path):
-                        with patch("app.httpx.AsyncClient", return_value=frame_context):
-                            return await client.post("/api/push")
+                            with patch("app.CONFIG_PATH", epdgz_path.parent / "config.json"):
+                                with patch("app.httpx.AsyncClient", return_value=frame_context):
+                                    return await client.post("/api/push")
 
         with tempfile.TemporaryDirectory() as directory:
             response = asyncio.run(push_image(Path(directory) / "display.epdgz"))
@@ -589,7 +650,7 @@ class DisplayImageTests(unittest.TestCase):
 
         async def render() -> dict[str, str]:
             order.append("render")
-            return {"updatedAt": "now"}
+            return {"updatedAt": "now", "name": "Dune"}
 
         async def push() -> int:
             order.append("push")
@@ -611,8 +672,9 @@ class DisplayImageTests(unittest.TestCase):
                                 )
                             )
 
-        self.assertEqual(order, ["search", "save", "render", "push"])
+        self.assertEqual(order, ["search", "save", "render", "push", "save"])
         self.assertEqual(saved_configs[0]["source"], source)
+        self.assertEqual(saved_configs[-1]["lastPushedImage"]["name"], "Dune")
 
     def test_generate_and_push_searches_tv_poster(self) -> None:
         source = {
@@ -631,7 +693,7 @@ class DisplayImageTests(unittest.TestCase):
         with patch("app.read_config", return_value={"processing": {}, "overlay": {}}):
             with patch("app.write_config", side_effect=saved_configs.append):
                 with patch("app.get_sources", new=AsyncMock(side_effect=search)):
-                    with patch("app.generate_display", new=AsyncMock(return_value={"updatedAt": "now"})):
+                    with patch("app.generate_display", new=AsyncMock(return_value={"updatedAt": "now", "name": "Severance"})):
                         with patch("app.push_prepared_image", new=AsyncMock(return_value=200)):
                             asyncio.run(
                                 run_generate_and_push(
@@ -690,7 +752,7 @@ class DisplayImageTests(unittest.TestCase):
 
         async def render() -> dict[str, str]:
             order.append("render")
-            return {"updatedAt": "now"}
+            return {"updatedAt": "now", "name": "AI portrait"}
 
         async def push() -> int:
             order.append("push")
@@ -726,7 +788,7 @@ class DisplayImageTests(unittest.TestCase):
                 "A bright red sailboat on a calm lake",
                 "portrait",
             )
-            self.assertEqual(order, ["save", "render", "push"])
+            self.assertEqual(order, ["save", "render", "push", "save"])
 
     def test_generate_and_push_returns_accepted_before_background_task_runs(self) -> None:
         payload = {"text": "A bright red sailboat on a calm lake", "provider": "google"}
