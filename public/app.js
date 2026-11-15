@@ -31,6 +31,7 @@ function notify(message) {
 
 async function request(url, options) {
   const response = await fetch(url, options);
+  scheduleApiLogRefresh();
   const result = await response.json();
   if (!response.ok) throw new Error(result.error || result.detail || 'Something went wrong.');
   return result;
@@ -477,6 +478,77 @@ apiMethodSelect.addEventListener('change', () => {
 });
 apiSendButton.addEventListener('click', sendApiWorkbenchRequest);
 updateApiWorkbench();
+
+const apiLogList = document.querySelector('#api-log-list');
+const apiLogsStatus = document.querySelector('#api-logs-status');
+const apiLogsRefreshButton = document.querySelector('#refresh-api-logs');
+const apiLogsOlderButton = document.querySelector('#load-older-api-logs');
+let apiLogsCursor = null;
+let apiLogRefreshTimer;
+
+function logPayloadMarkup(label, payload) {
+  const formatted = payload == null ? '(empty)' : JSON.stringify(payload, null, 2);
+  return `<figure class="api-log-payload"><figcaption>${label}</figcaption><pre>${escapeHtml(formatted)}</pre></figure>`;
+}
+
+function apiLogMarkup(entry) {
+  const query = new URLSearchParams(entry.query || {}).toString();
+  const route = `${entry.path}${query ? `?${query}` : ''}`;
+  const statusClass = entry.status >= 400 ? ' failed' : '';
+  return `<details class="api-log-entry">
+    <summary>
+      <span class="api-log-meta">
+        <span class="api-log-type">${escapeHtml(entry.type)}</span>
+        <span>${escapeHtml(entry.method)}</span>
+        <span class="api-log-route" title="${escapeHtml(route)}">${escapeHtml(route)}</span>
+        <span class="api-log-status${statusClass}">${escapeHtml(entry.status)}</span>
+        <span class="api-log-duration">${escapeHtml(Math.round(entry.durationMs))} ms</span>
+        <time class="api-log-time" datetime="${escapeHtml(entry.timestamp)}">${escapeHtml(new Date(entry.timestamp).toLocaleString())}</time>
+      </span>
+    </summary>
+    <div class="api-log-payloads">
+      ${logPayloadMarkup('Input', entry.input)}
+      ${logPayloadMarkup('Output', entry.output)}
+    </div>
+  </details>`;
+}
+
+async function loadApiLogs(reset = true) {
+  if (apiLogsRefreshButton.disabled) return;
+  apiLogsRefreshButton.disabled = true;
+  apiLogsStatus.textContent = 'Loading saved calls…';
+  try {
+    const params = new URLSearchParams({ limit: '100' });
+    if (!reset && apiLogsCursor) params.set('before_id', apiLogsCursor);
+    const response = await fetch(`/api/logs?${params}`);
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.detail || 'Could not load API call logs.');
+    if (reset) apiLogList.innerHTML = '';
+    const items = result.items || [];
+    if (items.length) {
+      apiLogList.insertAdjacentHTML('beforeend', items.map(apiLogMarkup).join(''));
+    }
+    if (reset && !items.length) {
+      apiLogList.innerHTML = '<div class="api-log-empty">No API or MCP calls have been saved yet.</div>';
+    }
+    apiLogsCursor = result.nextBeforeId;
+    apiLogsOlderButton.hidden = !apiLogsCursor;
+    apiLogsStatus.textContent = `${items.length ? apiLogList.querySelectorAll('.api-log-entry').length : 0} saved call(s) loaded · logs are kept indefinitely`;
+  } catch (error) {
+    apiLogsStatus.textContent = error.message;
+  } finally {
+    apiLogsRefreshButton.disabled = false;
+  }
+}
+
+function scheduleApiLogRefresh() {
+  clearTimeout(apiLogRefreshTimer);
+  apiLogRefreshTimer = setTimeout(() => loadApiLogs(true), 250);
+}
+
+apiLogsRefreshButton.addEventListener('click', () => loadApiLogs(true));
+apiLogsOlderButton.addEventListener('click', () => loadApiLogs(false));
+loadApiLogs();
 
 loadItems();
 loadStatus();

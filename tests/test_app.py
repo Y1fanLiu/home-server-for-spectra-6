@@ -8,23 +8,26 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
+from fastmcp import Client
 from google.genai.errors import ServerError
 from PIL import Image
-from fastapi.responses import JSONResponse
 from starlette.background import BackgroundTasks
 
 from app import (
     DISPLAY_SIZE,
     EPDGZ_COLOR_INDICES,
     EPDGZ_OUTPUT_PATH,
+    GenerateAndPushRequest,
     OUTPUT_PATH,
     PALETTE,
     SPECTRA6_OUTPUT_COLORS,
     SPECTRA6_PERCEIVED_COLORS,
     app,
+    api_mcp,
     encode_epdgz,
     font_at_size,
     generate_and_push,
@@ -182,46 +185,129 @@ class DisplayImageTests(unittest.TestCase):
                 text=text,
             )
 
+        now_playing_tool = "now_playing_api_now_playing_get"
+        generate_tool = "generate_and_push_api_generate_and_push_post"
         model_responses = [
             model_response(
-                tool_call=SimpleNamespace(name="get_now_playing", args={}),
+                tool_call=SimpleNamespace(name=now_playing_tool, args={}),
             ),
             model_response(
                 tool_call=SimpleNamespace(
-                    name="generate_and_push",
+                    name=generate_tool,
                     args={"text": "Make a movie poster for Dune"},
                 ),
             ),
             model_response("The Dune poster request was accepted."),
         ]
         metadata = {"playback": {"title": "Dune", "media_type": "Video"}}
+        tool_results = {
+            now_playing_tool: metadata,
+            generate_tool: {"status": "accepted", "requestId": "request-1"},
+        }
+
+        class FakeMcpClient:
+            async def __aenter__(self) -> "FakeMcpClient":
+                return self
+
+            async def __aexit__(self, *_args: object) -> None:
+                return None
+
+            async def list_tools(self) -> list[SimpleNamespace]:
+                return [
+                    SimpleNamespace(name=name, description=name, inputSchema={})
+                    for name in tool_results
+                ]
+
+            async def call_tool(self, name: str, _arguments: dict[str, Any]) -> SimpleNamespace:
+                return SimpleNamespace(data=tool_results[name], is_error=False, content=[])
 
         async def run_prompt() -> dict[str, object]:
-            with patch("app._call_assistant_model", side_effect=model_responses):
-                with patch("app.fetch_now_playing_metadata", new=AsyncMock(return_value=metadata)):
-                    with patch(
-                        "app.generate_and_push",
-                        new=AsyncMock(
-                            return_value=JSONResponse(
-                                status_code=202,
-                                content={"status": "accepted", "requestId": "request-1"},
-                            )
-                        ),
-                    ) as generate:
-                        result = await run_assistant_prompt("Make a poster for what's playing")
-                        self.assertEqual(
-                            generate.call_args.args[0]["text"],
-                            "Make a movie poster for Dune",
-                        )
-                        return result
+            with patch("app.Client", return_value=FakeMcpClient()):
+                with patch("app._call_assistant_model", side_effect=model_responses):
+                    return await run_assistant_prompt("Make a poster for what's playing")
 
         result = asyncio.run(run_prompt())
 
         self.assertEqual(result["response"], "The Dune poster request was accepted.")
         self.assertEqual(
             [action["tool"] for action in result["actions"]],
-            ["get_now_playing", "generate_and_push"],
+            [now_playing_tool, generate_tool],
         )
+
+    def test_api_mcp_exposes_api_routes_but_not_assistant(self) -> None:
+        async def list_api_tools() -> list[Any]:
+            async with Client(api_mcp) as client:
+                return await client.list_tools()
+
+        tools = asyncio.run(list_api_tools())
+        tool_names = [tool.name for tool in tools]
+
+        self.assertTrue(any("status" in name for name in tool_names))
+        self.assertTrue(any("now_playing" in name for name in tool_names))
+        self.assertTrue(any("generate_and_push" in name for name in tool_names))
+        self.assertFalse(any("assistant" in name for name in tool_names))
+        self.assertFalse(any("logs" in name for name in tool_names))
+        generate_tool = next(tool for tool in tools if "generate_and_push" in tool.name)
+        self.assertIn("movie poster", generate_tool.description)
+        self.assertIn("TV show poster", generate_tool.description)
+        input_schema = getattr(generate_tool, "inputSchema", None) or getattr(
+            generate_tool,
+            "input_schema",
+            {},
+        )
+        self.assertIn("text", json.dumps(input_schema))
+        self.assertIn("Severance", json.dumps(input_schema))
+
+    def test_gemini_schema_expands_nested_request_model_references(self) -> None:
+        schema = {
+            "type": "object",
+            "properties": {"payload": {"$ref": "#/$defs/GenerateRequest"}},
+            "$defs": {
+                "GenerateRequest": {
+                    "type": "object",
+                    "properties": {"text": {"type": "string", "description": "Prompt text."}},
+                    "required": ["text"],
+                }
+            },
+        }
+
+        from app import _gemini_json_schema
+
+        converted = _gemini_json_schema(schema)
+        self.assertEqual(converted["properties"]["payload"]["properties"]["text"]["type"], "string")
+        self.assertNotIn("$defs", json.dumps(converted))
+        nullable = _gemini_json_schema({"anyOf": [{"type": "string"}, {"type": "null"}]})
+        self.assertEqual(nullable, {"type": "string", "nullable": True})
+
+    def test_api_call_logs_capture_inputs_outputs_and_redact_secrets(self) -> None:
+        async def make_requests(database_path: Path) -> tuple[httpx.Response, httpx.Response]:
+            transport = httpx.ASGITransport(app=app)
+            with patch("app.API_CALL_LOG_DB_PATH", database_path):
+                with patch("app.run_assistant_prompt", new=AsyncMock(return_value={
+                    "response": "Logged response",
+                    "actions": [],
+                })):
+                    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+                        call_response = await client.post(
+                            "/api/assistant",
+                            json={"prompt": "Log this prompt", "api_key": "do-not-store"},
+                        )
+                        logs_response = await client.get("/api/logs?limit=10")
+                        return call_response, logs_response
+
+        with tempfile.TemporaryDirectory() as directory:
+            call_response, logs_response = asyncio.run(
+                make_requests(Path(directory) / "api-call-logs.sqlite3")
+            )
+
+        self.assertEqual(call_response.status_code, 200)
+        self.assertEqual(logs_response.status_code, 200)
+        logs = logs_response.json()["items"]
+        assistant_call = next(entry for entry in logs if entry["path"] == "/api/assistant")
+        self.assertEqual(assistant_call["input"]["prompt"], "Log this prompt")
+        self.assertEqual(assistant_call["input"]["api_key"], "[REDACTED]")
+        self.assertEqual(assistant_call["output"]["response"], "Logged response")
+        self.assertFalse(any(entry["path"] == "/api/logs" for entry in logs))
 
     def test_assistant_endpoint_answers_general_questions_without_tools(self) -> None:
         async def ask_assistant() -> httpx.Response:
@@ -646,7 +732,7 @@ class DisplayImageTests(unittest.TestCase):
         payload = {"text": "A bright red sailboat on a calm lake", "provider": "google"}
         background_tasks = BackgroundTasks()
         with patch("app.available_ai_providers", return_value={"openai": False, "google": True}):
-            response = asyncio.run(generate_and_push(payload, background_tasks))
+            response = asyncio.run(generate_and_push(GenerateAndPushRequest(**payload), background_tasks))
 
         self.assertEqual(response.status_code, 202)
         response_body = json.loads(response.body)
@@ -661,7 +747,7 @@ class DisplayImageTests(unittest.TestCase):
         payload = {"text": "TV show poster for Severance"}
         background_tasks = BackgroundTasks()
         with patch("app.available_ai_providers", return_value={"openai": False, "google": False}):
-            response = asyncio.run(generate_and_push(payload, background_tasks))
+            response = asyncio.run(generate_and_push(GenerateAndPushRequest(**payload), background_tasks))
 
         self.assertEqual(response.status_code, 202)
         self.assertEqual(background_tasks.tasks[0].func, run_generate_and_push)

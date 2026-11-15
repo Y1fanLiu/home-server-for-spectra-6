@@ -161,6 +161,17 @@
           <pre id="api-response-output" aria-live="polite">Choose an endpoint and send a request to see its response.</pre>
         </div>
       </section>
+      <section class="api-logs" aria-labelledby="api-logs-heading">
+        <div class="api-heading">
+          <div><p class="eyebrow">04 / HISTORY</p><h2 id="api-logs-heading">API &amp; MCP call log</h2></div>
+          <div class="api-log-actions">
+            <p id="api-logs-status" role="status">Loading saved calls…</p>
+            <button id="refresh-api-logs" class="frame-button" type="button">Refresh</button>
+          </div>
+        </div>
+        <div id="api-log-list" class="api-log-list" aria-live="polite"></div>
+        <button id="load-older-api-logs" class="text-button api-log-older" type="button" hidden>Load older calls</button>
+      </section>
       <footer class="page-footer"><span>IMAGE ENDPOINT <a href="/display.png" target="_blank" rel="noreferrer">/display.png <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h6v6m0-6-9 9"></path><path d="M18 13v6a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h6"></path></svg></a></span><span id="generated-at">Waiting for first image</span></footer>
     </main>
     <div id="toast" class="toast" role="status"></div>
